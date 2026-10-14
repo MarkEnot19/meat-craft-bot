@@ -1,0 +1,177 @@
+import asyncio
+import logging
+import os
+from aiogram import Bot, Dispatcher, F, types
+from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+# -------------------------------------------------------------
+API_TOKEN = os.getenv("BOT_TOKEN", "8401928567:AAHF3IthnksvBLmIUr-z5hG-rYOjk7CO0s8")
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_ID", "791825443"))
+# -------------------------------------------------------------
+
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher()
+
+
+class OrderState(StatesGroup):
+    choosing_flavor = State()
+    choosing_weight = State()
+    waiting_for_phone = State()
+    waiting_for_address = State()
+
+
+# 1. Команда /start — вибір смаку курки
+@dp.message(CommandStart())
+async def cmd_start(message: types.Message, state: FSMContext):
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🟡 Класична", callback_data="flavor_classic"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🧄 З часником", callback_data="flavor_garlic"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🌶 Гостра", callback_data="flavor_spicy"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⚫ З перцем", callback_data="flavor_pepper"
+                )
+            ],
+        ]
+    )
+    await message.answer(
+        "Вітаємо у крафтовій майстерні **«М'ясний крафт»**! 🥩✨\n\n"
+        "Натуральне сиров'ялене куряче м'ясо власного виробництва.\n"
+        "Оберіть улюблений смак:",
+        reply_markup=keyboard,
+        parse_mode="Markdown",
+    )
+    await state.set_state(OrderState.choosing_flavor)
+
+
+# 2. Обробка вибору смаку -> перехід до вибору ваги
+@dp.callback_query(OrderState.choosing_flavor, F.data.startswith("flavor_"))
+async def process_flavor(callback: types.CallbackQuery, state: FSMContext):
+    flavors = {
+        "flavor_classic": "Курятина (Класична)",
+        "flavor_garlic": "Курятина (З часником)",
+        "flavor_spicy": "Курятина (Гостра)",
+        "flavor_pepper": "Курятина (З перцем)",
+    }
+
+    flavor_name = flavors.get(callback.data, "Курятина сиров'ялена")
+    await state.update_data(flavor=flavor_name)
+
+    # Кнопки вибору ваги / фасування
+    weight_keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="50 г", callback_data="weight_50"),
+                InlineKeyboardButton(text="100 г", callback_data="weight_100"),
+            ],
+            [
+                InlineKeyboardButton(text="200 г", callback_data="weight_200"),
+                InlineKeyboardButton(text="500 г", callback_data="weight_500"),
+            ],
+        ]
+    )
+
+    await callback.message.answer(
+        f"Ви обрали: **{flavor_name}**.\n\n" f"Оберіть бажане фасування:",
+        reply_markup=weight_keyboard,
+        parse_mode="Markdown",
+    )
+    await state.set_state(OrderState.choosing_weight)
+    await callback.answer()
+
+
+# 3. Обробка вибору ваги -> перехід до введення телефону
+@dp.callback_query(OrderState.choosing_weight, F.data.startswith("weight_"))
+async def process_weight(callback: types.CallbackQuery, state: FSMContext):
+    weights = {
+        "weight_50": "50 г",
+        "weight_100": "100 г",
+        "weight_200": "200 г",
+        "weight_500": "500 г",
+    }
+
+    weight_val = weights.get(callback.data, "100 г")
+    await state.update_data(weight=weight_val)
+
+    await callback.message.answer(
+        f"Обрано фасування: **{weight_val}**.\n\n"
+        f"Будь ласка, введіть ваш **номер телефону** для зв'язку:",
+        parse_mode="Markdown",
+    )
+    await state.set_state(OrderState.waiting_for_phone)
+    await callback.answer()
+
+
+# 4. Отримання телефону
+@dp.message(OrderState.waiting_for_phone)
+async def process_phone(message: types.Message, state: FSMContext):
+    await state.update_data(phone=message.text)
+    await message.answer(
+        "Дякуємо! Тепер вкажіть **місто та номер відділення Нової Пошти / Укрпошти** (або адресу):",
+        parse_mode="Markdown",
+    )
+    await state.set_state(OrderState.waiting_for_address)
+
+
+# 5. Отримання адреси та відправка замовлення вам
+@dp.message(OrderState.waiting_for_address)
+async def process_address(message: types.Message, state: FSMContext):
+    user_data = await state.get_data()
+    flavor = user_data.get("flavor")
+    weight = user_data.get("weight")
+    phone = user_data.get("phone")
+    address = message.text
+
+    username = (
+        f"@{message.from_user.username}"
+        if message.from_user.username
+        else "не вказано"
+    )
+
+    order_text = (
+        f"🥩 **НОВЕ ЗАМОВЛЕННЯ — М'ЯСНИЙ КРАФТ**\n\n"
+        f"👤 Клієнт: {message.from_user.first_name} ({username})\n"
+        f"📦 Товар: {flavor}\n"
+        f"⚖️ Фасування: {weight}\n"
+        f"📞 Телефон: {phone}\n"
+        f"📍 Доставка: {address}"
+    )
+
+    try:
+        await bot.send_message(
+            chat_id=ADMIN_CHAT_ID, text=order_text, parse_mode="Markdown"
+        )
+    except Exception as e:
+        logging.error(f"Не вдалося надіслати сповіщення: {e}")
+
+    await message.answer(
+        "✅ **Дякуємо за замовлення!**\n\n"
+        "Заявка успішно сформована. Найближчим часом ми зв'яжемося з вами для підтвердження. Смачного! 🥩",
+        parse_mode="Markdown",
+    )
+    await state.clear()
+
+
+async def main():
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(main())
